@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "name": "Kino Bot — Faylni Tekshirish",
+  "description": "bot.py yoki database.py o'zgarganda, kodda xato yoki yetishmayotgan handler borligini tekshiradi",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "bot.py",
+      "database.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "bot.py yoki database.py fayli o'zgartirildi. Quyidagi narsalarni tekshir: 1) ConversationHandler states to'liq va to'g'ri keltirilganmi? 2) Barcha callback_data lar handlerlarda mavjudmi? 3) db metodlari database.py da aniqlangan? 4) Xato yoki yetishmayotgan narsa bo'lsa tuzat."
+  }
+}
