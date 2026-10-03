@@ -764,9 +764,39 @@ async def settings_check_password(
         )
         return SETTINGS_PASSWORD
 
+    # Parol to'g'ri — avval barcha yashirin buyruqlarni ko'rsat
     await update.message.reply_text(
-        "✅ <b>Xush kelibsiz!</b>\n\n"
-        "Quyidagilardan birini tanlang:",
+        "✅ <b>Xush kelibsiz, Admin!</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📋 <b>BARCHA ADMIN BUYRUQLARI:</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎬 <b>Kino boshqaruvi:</b>\n"
+        "  /add — Yangi kino qo'shish\n"
+        "  /delete &lt;kod&gt; — Kinoni o'chirish\n"
+        "    Misol: <code>/delete 1267</code>\n\n"
+        "📢 <b>Xabar yuborish:</b>\n"
+        "  /broadcast &lt;matn&gt; — Barcha userlarga xabar\n"
+        "    Misol: <code>/broadcast Yangi kino qo'shildi!</code>\n\n"
+        "📊 <b>Statistika:</b>\n"
+        "  /admin — Admin panel va statistika\n"
+        "  /stats — Umumiy statistika\n\n"
+        "⚙️ <b>Sozlamalar:</b>\n"
+        "  /settings — Bu panel (parol kerak)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👤 <b>Foydalanuvchi buyruqlari:</b>\n"
+        "  /start — Botni boshlash\n"
+        "  /search — Kino qidirish\n"
+        "  /categories — Kategoriyalar\n"
+        "  /favorites — Sevimlilar\n"
+        "  /top — Top 10 kino\n"
+        "  /help — Yordam\n"
+        "━━━━━━━━━━━━━━━━━━━━",
+        parse_mode=ParseMode.HTML,
+    )
+
+    # Keyin sozlamalar panelini ko'rsat
+    await update.message.reply_text(
+        "⚙️ <b>Sozlamalar paneli</b>\n\nNimani o'zgartirmoqchisiz?",
         parse_mode=ParseMode.HTML,
         reply_markup=_settings_keyboard(),
     )
