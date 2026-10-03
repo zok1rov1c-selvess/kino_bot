@@ -1,8 +1,12 @@
 [phases.setup]
-nixPkgs = ["python311", "gcc"]
+nixPkgs = ["python311", "gcc", "postgresql"]
 
 [phases.install]
-cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = [
+  "pip install --upgrade pip wheel setuptools",
+  "pip install asyncpg==0.29.0 --no-build-isolation",
+  "pip install -r requirements.txt"
+]
 
 [start]
 cmd = "python bot.py"
