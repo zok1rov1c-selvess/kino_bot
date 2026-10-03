@@ -1,17 +1,21 @@
-"""Kino bot database — PostgreSQL."""
+"""Kino bot database — PostgreSQL (psycopg2-binary)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from contextlib import contextmanager
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 try:
-    import asyncpg
-    HAS_ASYNCPG = True
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.pool
+    HAS_PSYCOPG2 = True
 except ImportError:
-    HAS_ASYNCPG = False
+    HAS_PSYCOPG2 = False
 
 DATABASE_URL     = os.getenv("DATABASE_URL", "").strip()
 EDU_DB_URL       = os.getenv("EDU_BOT_DATABASE_URL", "").strip()
@@ -19,313 +23,360 @@ EDU_DB_URL       = os.getenv("EDU_BOT_DATABASE_URL", "").strip()
 
 class KinoDB:
     def __init__(self) -> None:
-        self._pool: Optional[object] = None
-        self._edu_pool: Optional[object] = None
+        self._pool = None
+        self._edu_pool = None
         self.ready     = False
         self.edu_ready = False
 
     # ── Ulanish ───────────────────────────────────────────────────────────────
     async def connect(self) -> None:
-        if not HAS_ASYNCPG:
-            log.warning("asyncpg o'rnatilmagan")
+        if not HAS_PSYCOPG2:
+            log.warning("psycopg2 o'rnatilmagan")
             return
 
-        # Kino bot DB
         if DATABASE_URL:
             try:
-                url = DATABASE_URL
-                if "railway" in url and "sslmode" not in url:
-                    url += "?sslmode=require"
-                self._pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
-                await self._init_tables()
+                self._pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=10, dsn=DATABASE_URL
+                )
+                await asyncio.to_thread(self._init_tables)
                 self.ready = True
                 log.info("KinoDB ulandi ✅")
             except Exception as e:
                 log.error("KinoDB ulanmadi: %s", e)
         else:
-            log.warning("DATABASE_URL yo'q — kino DB o'chirilgan")
+            log.warning("DATABASE_URL yo'q")
 
-        # Edu bot DB (faqat agar URL berilgan bo'lsa)
         if EDU_DB_URL:
             try:
-                edu_url = EDU_DB_URL
-                if "railway" in edu_url and "sslmode" not in edu_url:
-                    edu_url += "?sslmode=require"
-                self._edu_pool = await asyncpg.create_pool(edu_url, min_size=1, max_size=5)
+                self._edu_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=5, dsn=EDU_DB_URL
+                )
                 self.edu_ready = True
                 log.info("EduDB ulandi ✅")
             except Exception as e:
                 log.warning("EduDB ulanmadi: %s", e)
 
-    async def _init_tables(self) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id    BIGINT PRIMARY KEY,
-                    username   TEXT,
-                    full_name  TEXT,
-                    joined_at  TIMESTAMPTZ DEFAULT NOW(),
-                    last_seen  TIMESTAMPTZ DEFAULT NOW(),
-                    is_blocked BOOLEAN DEFAULT FALSE
-                );
+    @contextmanager
+    def _get_conn(self, pool=None):
+        p = pool or self._pool
+        conn = p.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            p.putconn(conn)
 
-                CREATE TABLE IF NOT EXISTS movies (
-                    id          SERIAL PRIMARY KEY,
-                    code        TEXT UNIQUE NOT NULL,
-                    title       TEXT NOT NULL,
-                    file_id     TEXT NOT NULL,
-                    poster_id   TEXT DEFAULT '',
-                    description TEXT DEFAULT '',
-                    year        INTEGER,
-                    country     TEXT DEFAULT '',
-                    language    TEXT DEFAULT 'O''zbek',
-                    quality     TEXT DEFAULT 'HD',
-                    type        TEXT DEFAULT 'kino',
-                    genre       TEXT DEFAULT '',
-                    duration    TEXT DEFAULT '',
-                    views       INTEGER DEFAULT 0,
-                    added_at    TIMESTAMPTZ DEFAULT NOW(),
-                    is_active   BOOLEAN DEFAULT TRUE
-                );
+    def _init_tables(self) -> None:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id    BIGINT PRIMARY KEY,
+                        username   TEXT,
+                        full_name  TEXT,
+                        joined_at  TIMESTAMPTZ DEFAULT NOW(),
+                        last_seen  TIMESTAMPTZ DEFAULT NOW(),
+                        is_blocked BOOLEAN DEFAULT FALSE
+                    );
 
-                CREATE TABLE IF NOT EXISTS episodes (
-                    id         SERIAL PRIMARY KEY,
-                    movie_id   INTEGER REFERENCES movies(id) ON DELETE CASCADE,
-                    season     INTEGER DEFAULT 1,
-                    episode    INTEGER NOT NULL,
-                    file_id    TEXT NOT NULL,
-                    title      TEXT DEFAULT '',
-                    added_at   TIMESTAMPTZ DEFAULT NOW()
-                );
+                    CREATE TABLE IF NOT EXISTS movies (
+                        id          SERIAL PRIMARY KEY,
+                        code        TEXT UNIQUE NOT NULL,
+                        title       TEXT NOT NULL,
+                        file_id     TEXT NOT NULL,
+                        poster_id   TEXT DEFAULT '',
+                        description TEXT DEFAULT '',
+                        year        INTEGER,
+                        country     TEXT DEFAULT '',
+                        language    TEXT DEFAULT 'O''zbek',
+                        quality     TEXT DEFAULT 'HD',
+                        type        TEXT DEFAULT 'kino',
+                        genre       TEXT DEFAULT '',
+                        duration    TEXT DEFAULT '',
+                        views       INTEGER DEFAULT 0,
+                        added_at    TIMESTAMPTZ DEFAULT NOW(),
+                        is_active   BOOLEAN DEFAULT TRUE
+                    );
 
-                CREATE TABLE IF NOT EXISTS watch_history (
-                    id         SERIAL PRIMARY KEY,
-                    user_id    BIGINT REFERENCES users(user_id),
-                    movie_id   INTEGER REFERENCES movies(id),
-                    watched_at TIMESTAMPTZ DEFAULT NOW()
-                );
+                    CREATE TABLE IF NOT EXISTS episodes (
+                        id         SERIAL PRIMARY KEY,
+                        movie_id   INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+                        season     INTEGER DEFAULT 1,
+                        episode    INTEGER NOT NULL,
+                        file_id    TEXT NOT NULL,
+                        title      TEXT DEFAULT '',
+                        added_at   TIMESTAMPTZ DEFAULT NOW()
+                    );
 
-                CREATE TABLE IF NOT EXISTS favorites (
-                    user_id    BIGINT REFERENCES users(user_id),
-                    movie_id   INTEGER REFERENCES movies(id),
-                    added_at   TIMESTAMPTZ DEFAULT NOW(),
-                    PRIMARY KEY (user_id, movie_id)
-                );
+                    CREATE TABLE IF NOT EXISTS watch_history (
+                        id         SERIAL PRIMARY KEY,
+                        user_id    BIGINT REFERENCES users(user_id),
+                        movie_id   INTEGER REFERENCES movies(id),
+                        watched_at TIMESTAMPTZ DEFAULT NOW()
+                    );
 
-                CREATE INDEX IF NOT EXISTS idx_movies_code   ON movies(code);
-                CREATE INDEX IF NOT EXISTS idx_movies_type   ON movies(type);
-                CREATE INDEX IF NOT EXISTS idx_movies_genre  ON movies(genre);
-                CREATE INDEX IF NOT EXISTS idx_movies_search ON movies USING gin(to_tsvector('simple', title));
-                CREATE INDEX IF NOT EXISTS idx_history_user  ON watch_history(user_id, watched_at DESC);
-            """)
+                    CREATE TABLE IF NOT EXISTS favorites (
+                        user_id    BIGINT REFERENCES users(user_id),
+                        movie_id   INTEGER REFERENCES movies(id),
+                        added_at   TIMESTAMPTZ DEFAULT NOW(),
+                        PRIMARY KEY (user_id, movie_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_movies_code   ON movies(code);
+                    CREATE INDEX IF NOT EXISTS idx_movies_type   ON movies(type);
+                    CREATE INDEX IF NOT EXISTS idx_movies_genre  ON movies(genre);
+                    CREATE INDEX IF NOT EXISTS idx_history_user  ON watch_history(user_id, watched_at DESC);
+                """)
         log.info("Jadvallar tayyor ✅")
+
+    def _fetchone(self, sql: str, params: tuple = (), pool=None) -> Optional[dict]:
+        with self._get_conn(pool) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def _fetchall(self, sql: str, params: tuple = (), pool=None) -> list[dict]:
+        with self._get_conn(pool) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, params)
+                return [dict(r) for r in cur.fetchall()]
+
+    def _fetchval(self, sql: str, params: tuple = (), pool=None):
+        with self._get_conn(pool) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                return row[0] if row else None
+
+    def _execute(self, sql: str, params: tuple = (), pool=None) -> str:
+        with self._get_conn(pool) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.statusmessage or ""
 
     # ── Edu bot tekshiruvi ────────────────────────────────────────────────────
     async def is_edu_user(self, user_id: int) -> bool:
-        """Foydalanuvchi edu_botga /start bosganmi tekshiradi."""
         if not self.edu_ready or not self._edu_pool:
-            # Edu DB ulanmagan — tekshiruvni o'tkazib yuborish (ruxsat beriladi)
-            log.warning("EduDB ulanmagan — edu tekshiruvi o'tkazib yuborildi")
             return True
         try:
-            async with self._edu_pool.acquire() as conn:
-                # Edu bot users jadvalidagi standart tuzilish
-                result = await conn.fetchval(
-                    "SELECT 1 FROM users WHERE user_id = $1", user_id
-                )
-                return result is not None
+            result = await asyncio.to_thread(
+                self._fetchval,
+                "SELECT 1 FROM users WHERE user_id = %s",
+                (user_id,),
+                self._edu_pool
+            )
+            return result is not None
         except Exception as e:
             log.warning("Edu tekshiruvi xato: %s", e)
-            return True  # Xato bo'lsa ruxsat beriladi
+            return True
 
     # ── Foydalanuvchi ─────────────────────────────────────────────────────────
-    async def upsert_user(self, user_id: int, username: str | None, full_name: str) -> None:
+    async def upsert_user(self, user_id: int, username: Optional[str], full_name: str) -> None:
         if not self.ready:
             return
         try:
-            async with self._pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO users (user_id, username, full_name)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (user_id) DO UPDATE
-                        SET username  = EXCLUDED.username,
-                            full_name = EXCLUDED.full_name,
-                            last_seen = NOW()
-                """, user_id, username, full_name)
+            await asyncio.to_thread(
+                self._execute,
+                """INSERT INTO users (user_id, username, full_name)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (user_id) DO UPDATE
+                   SET username=EXCLUDED.username,
+                       full_name=EXCLUDED.full_name,
+                       last_seen=NOW()""",
+                (user_id, username, full_name)
+            )
         except Exception as e:
             log.debug("upsert_user: %s", e)
 
     async def get_user_count(self) -> int:
         if not self.ready:
             return 0
-        async with self._pool.acquire() as conn:
-            return await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+        result = await asyncio.to_thread(
+            self._fetchval, "SELECT COUNT(*) FROM users"
+        )
+        return result or 0
 
     async def get_today_user_count(self) -> int:
-        """Bugun qo'shilgan foydalanuvchilar soni."""
         if not self.ready:
             return 0
-        async with self._pool.acquire() as conn:
-            return await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE joined_at >= CURRENT_DATE"
-            ) or 0
+        result = await asyncio.to_thread(
+            self._fetchval,
+            "SELECT COUNT(*) FROM users WHERE joined_at >= CURRENT_DATE"
+        )
+        return result or 0
 
     async def get_all_user_ids(self) -> list[int]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=FALSE")
-            return [r["user_id"] for r in rows]
+        rows = await asyncio.to_thread(
+            self._fetchall,
+            "SELECT user_id FROM users WHERE is_blocked=FALSE"
+        )
+        return [r["user_id"] for r in rows]
 
     async def get_users_list(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        """Username va ismlari bilan foydalanuvchilar ro'yxati."""
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT user_id, username, full_name, joined_at, last_seen
-                FROM users
-                ORDER BY joined_at DESC
-                LIMIT $1 OFFSET $2
-            """, limit, offset)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            "SELECT user_id, username, full_name, joined_at, last_seen "
+            "FROM users ORDER BY joined_at DESC LIMIT %s OFFSET %s",
+            (limit, offset)
+        )
 
     # ── Kino CRUD ─────────────────────────────────────────────────────────────
     async def add_movie(self, data: dict) -> int:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO movies
-                    (code, title, file_id, poster_id, description,
-                     year, country, language, quality, type, genre, duration)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-                ON CONFLICT (code) DO UPDATE SET
-                    title=$2, file_id=$3, poster_id=$4, description=$5,
-                    year=$6, country=$7, language=$8, quality=$9,
-                    type=$10, genre=$11, duration=$12
-                RETURNING id
-            """,
-            data["code"], data["title"], data["file_id"],
-            data.get("poster_id", ""), data.get("description", ""),
-            data.get("year"), data.get("country", ""),
-            data.get("language", "O'zbek"), data.get("quality", "HD"),
-            data.get("type", "kino"), data.get("genre", ""),
-            data.get("duration", ""))
-            return row["id"]
+        if not self.ready:
+            raise RuntimeError("DB ulanmagan")
+        def _add():
+            with self._get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO movies
+                            (code, title, file_id, poster_id, description,
+                             year, country, language, quality, type, genre, duration)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (code) DO UPDATE SET
+                            title=%s, file_id=%s, poster_id=%s, description=%s,
+                            year=%s, country=%s, language=%s, quality=%s,
+                            type=%s, genre=%s, duration=%s
+                        RETURNING id
+                    """, (
+                        data["code"], data["title"], data["file_id"],
+                        data.get("poster_id", ""), data.get("description", ""),
+                        data.get("year"), data.get("country", ""),
+                        data.get("language", "O'zbek"), data.get("quality", "HD"),
+                        data.get("type", "kino"), data.get("genre", ""),
+                        data.get("duration", ""),
+                        # ON CONFLICT DO UPDATE SET values
+                        data["title"], data["file_id"],
+                        data.get("poster_id", ""), data.get("description", ""),
+                        data.get("year"), data.get("country", ""),
+                        data.get("language", "O'zbek"), data.get("quality", "HD"),
+                        data.get("type", "kino"), data.get("genre", ""),
+                        data.get("duration", ""),
+                    ))
+                    return cur.fetchone()[0]
+        return await asyncio.to_thread(_add)
 
-    async def get_movie_by_code(self, code: str) -> dict | None:
+    async def get_movie_by_code(self, code: str) -> Optional[dict]:
         if not self.ready:
             return None
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM movies WHERE code=$1 AND is_active=TRUE", code
-            )
-            return dict(row) if row else None
+        return await asyncio.to_thread(
+            self._fetchone,
+            "SELECT * FROM movies WHERE code=%s AND is_active=TRUE",
+            (code,)
+        )
 
-    async def get_movie_by_id(self, movie_id: int) -> dict | None:
+    async def get_movie_by_id(self, movie_id: int) -> Optional[dict]:
         if not self.ready:
             return None
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM movies WHERE id=$1 AND is_active=TRUE", movie_id
-            )
-            return dict(row) if row else None
+        return await asyncio.to_thread(
+            self._fetchone,
+            "SELECT * FROM movies WHERE id=%s AND is_active=TRUE",
+            (movie_id,)
+        )
 
     async def increment_views(self, movie_id: int) -> None:
         if not self.ready:
             return
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE movies SET views=views+1 WHERE id=$1", movie_id
-            )
+        await asyncio.to_thread(
+            self._execute,
+            "UPDATE movies SET views=views+1 WHERE id=%s",
+            (movie_id,)
+        )
 
     async def log_watch(self, user_id: int, movie_id: int) -> None:
         if not self.ready:
             return
         try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO watch_history (user_id,movie_id) VALUES ($1,$2)",
-                    user_id, movie_id
-                )
+            await asyncio.to_thread(
+                self._execute,
+                "INSERT INTO watch_history (user_id,movie_id) VALUES (%s,%s)",
+                (user_id, movie_id)
+            )
         except Exception:
             pass
 
     async def search_movies(self, query: str, limit: int = 10) -> list[dict]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, code, title, type, genre, year, quality, views
-                FROM movies
-                WHERE is_active=TRUE AND (
-                    LOWER(title) LIKE LOWER($1) OR code = $2
-                )
-                ORDER BY views DESC
-                LIMIT $3
-            """, f"%{query}%", query, limit)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            """SELECT id, code, title, type, genre, year, quality, views
+               FROM movies
+               WHERE is_active=TRUE AND (
+                   LOWER(title) LIKE LOWER(%s) OR code = %s
+               )
+               ORDER BY views DESC LIMIT %s""",
+            (f"%{query}%", query, limit)
+        )
 
     async def get_movies_by_type(self, movie_type: str, offset: int = 0,
                                   limit: int = 8) -> list[dict]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, code, title, type, genre, year, quality, views
-                FROM movies WHERE is_active=TRUE AND type=$1
-                ORDER BY added_at DESC
-                LIMIT $2 OFFSET $3
-            """, movie_type, limit, offset)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            """SELECT id, code, title, type, genre, year, quality, views
+               FROM movies WHERE is_active=TRUE AND type=%s
+               ORDER BY added_at DESC LIMIT %s OFFSET %s""",
+            (movie_type, limit, offset)
+        )
 
     async def get_movies_by_genre(self, genre: str, offset: int = 0,
                                    limit: int = 8) -> list[dict]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, code, title, type, genre, year, quality, views
-                FROM movies WHERE is_active=TRUE AND LOWER(genre) LIKE LOWER($1)
-                ORDER BY views DESC LIMIT $2 OFFSET $3
-            """, f"%{genre}%", limit, offset)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            """SELECT id, code, title, type, genre, year, quality, views
+               FROM movies WHERE is_active=TRUE AND LOWER(genre) LIKE LOWER(%s)
+               ORDER BY views DESC LIMIT %s OFFSET %s""",
+            (f"%{genre}%", limit, offset)
+        )
 
     async def get_top_movies(self, limit: int = 10) -> list[dict]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, code, title, type, genre, year, views
-                FROM movies WHERE is_active=TRUE
-                ORDER BY views DESC LIMIT $1
-            """, limit)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            """SELECT id, code, title, type, genre, year, views
+               FROM movies WHERE is_active=TRUE
+               ORDER BY views DESC LIMIT %s""",
+            (limit,)
+        )
 
     async def get_movie_stats(self) -> dict:
         if not self.ready:
             return {}
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN type='kino'     THEN 1 ELSE 0 END) AS kinolar,
-                    SUM(CASE WHEN type='serial'   THEN 1 ELSE 0 END) AS seriallar,
-                    SUM(CASE WHEN type='multfilm' THEN 1 ELSE 0 END) AS multfilmlar,
-                    SUM(views) AS total_views
-                FROM movies WHERE is_active=TRUE
-            """)
-            return dict(row) if row else {}
+        result = await asyncio.to_thread(
+            self._fetchone,
+            """SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN type='kino'     THEN 1 ELSE 0 END) AS kinolar,
+                SUM(CASE WHEN type='serial'   THEN 1 ELSE 0 END) AS seriallar,
+                SUM(CASE WHEN type='multfilm' THEN 1 ELSE 0 END) AS multfilmlar,
+                SUM(views) AS total_views
+               FROM movies WHERE is_active=TRUE"""
+        )
+        return result or {}
 
     # ── Sevimlilar ────────────────────────────────────────────────────────────
     async def add_favorite(self, user_id: int, movie_id: int) -> bool:
         if not self.ready:
             return False
         try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO favorites (user_id,movie_id) VALUES ($1,$2)",
-                    user_id, movie_id
-                )
+            await asyncio.to_thread(
+                self._execute,
+                "INSERT INTO favorites (user_id,movie_id) VALUES (%s,%s)",
+                (user_id, movie_id)
+            )
             return True
         except Exception:
             return False
@@ -333,63 +384,67 @@ class KinoDB:
     async def remove_favorite(self, user_id: int, movie_id: int) -> None:
         if not self.ready:
             return
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM favorites WHERE user_id=$1 AND movie_id=$2",
-                user_id, movie_id
-            )
+        await asyncio.to_thread(
+            self._execute,
+            "DELETE FROM favorites WHERE user_id=%s AND movie_id=%s",
+            (user_id, movie_id)
+        )
 
     async def is_favorite(self, user_id: int, movie_id: int) -> bool:
         if not self.ready:
             return False
-        async with self._pool.acquire() as conn:
-            r = await conn.fetchval(
-                "SELECT 1 FROM favorites WHERE user_id=$1 AND movie_id=$2",
-                user_id, movie_id
-            )
-            return bool(r)
+        result = await asyncio.to_thread(
+            self._fetchval,
+            "SELECT 1 FROM favorites WHERE user_id=%s AND movie_id=%s",
+            (user_id, movie_id)
+        )
+        return result is not None
 
     async def get_favorites(self, user_id: int) -> list[dict]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT m.id, m.code, m.title, m.type, m.genre, m.year, m.views
-                FROM favorites f JOIN movies m ON f.movie_id=m.id
-                WHERE f.user_id=$1 AND m.is_active=TRUE
-                ORDER BY f.added_at DESC
-            """, user_id)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            """SELECT m.id, m.code, m.title, m.type, m.genre, m.year, m.views
+               FROM favorites f JOIN movies m ON f.movie_id=m.id
+               WHERE f.user_id=%s AND m.is_active=TRUE
+               ORDER BY f.added_at DESC""",
+            (user_id,)
+        )
 
     # ── Seriyalar ─────────────────────────────────────────────────────────────
     async def add_episode(self, movie_id: int, season: int,
                           episode: int, file_id: str, title: str = "") -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO episodes (movie_id, season, episode, file_id, title)
-                VALUES ($1,$2,$3,$4,$5)
-                ON CONFLICT DO NOTHING
-            """, movie_id, season, episode, file_id, title)
+        if not self.ready:
+            return
+        try:
+            await asyncio.to_thread(
+                self._execute,
+                """INSERT INTO episodes (movie_id, season, episode, file_id, title)
+                   VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                (movie_id, season, episode, file_id, title)
+            )
+        except Exception:
+            pass
 
     async def get_episodes(self, movie_id: int, season: int = 1) -> list[dict]:
         if not self.ready:
             return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT * FROM episodes
-                WHERE movie_id=$1 AND season=$2
-                ORDER BY episode
-            """, movie_id, season)
-            return [dict(r) for r in rows]
+        return await asyncio.to_thread(
+            self._fetchall,
+            "SELECT * FROM episodes WHERE movie_id=%s AND season=%s ORDER BY episode",
+            (movie_id, season)
+        )
 
     async def delete_movie(self, code: str) -> bool:
         if not self.ready:
             return False
-        async with self._pool.acquire() as conn:
-            r = await conn.execute(
-                "UPDATE movies SET is_active=FALSE WHERE code=$1", code
-            )
-            return r != "UPDATE 0"
+        status = await asyncio.to_thread(
+            self._execute,
+            "UPDATE movies SET is_active=FALSE WHERE code=%s",
+            (code,)
+        )
+        return status != "UPDATE 0"
 
 
 db = KinoDB()
