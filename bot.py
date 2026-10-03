@@ -112,43 +112,56 @@ def _movie_keyboard(movie_id: int, is_fav: bool = False) -> InlineKeyboardMarkup
 
 
 async def _check_subscriptions(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Kanal obunasini tekshiradi."""
+    """Kanal obunasini tekshiradi. Kanal linki oshkor etilmaydi."""
     user_id = update.effective_user.id
     channels = [ch for ch in config.REQUIRED_CHANNELS if ch]
     if not channels:
         return True
 
-    not_subscribed = []
-    for channel in channels:
+    not_subscribed_idx = []  # indekslar: 0 = 1-kanal, 1 = 2-kanal
+    for i, channel in enumerate(channels):
         try:
             member = await ctx.bot.get_chat_member(channel, user_id)
             if member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
-                not_subscribed.append(channel)
+                not_subscribed_idx.append(i)
         except Exception:
-            not_subscribed.append(channel)
+            not_subscribed_idx.append(i)
 
-    if not not_subscribed:
+    if not not_subscribed_idx:
         return True
 
+    # Tugmalar — link ko'rsatiladi, lekin matnda faqat "1-kanal", "2-kanal"
     buttons = []
-    for ch in not_subscribed:
-        name = ch.lstrip("@")
+    channel_names = []
+    for i in not_subscribed_idx:
+        ch = channels[i]
+        label = f"{i + 1}-kanal"
+        channel_names.append(label)
+        # URL: agar @ bilan bo'lsa t.me/username, agar raqam bo'lsa to'g'ridan link
+        if ch.startswith("@"):
+            url = f"https://t.me/{ch.lstrip('@')}"
+        elif ch.startswith("-100"):
+            # Raqamli kanal ID — invite link yo'q, faqat bot admin bo'lsa ishlaydi
+            url = "https://t.me"
+        else:
+            url = ch  # to'g'ridan URL
         buttons.append([InlineKeyboardButton(
-            f"📢 {ch} kanaliga obuna bo'lish",
-            url=f"https://t.me/{name}"
+            f"📢 {label}ga obuna bo'lish", url=url
         )])
+
     buttons.append([InlineKeyboardButton(
         "✅ Obuna bo'ldim — tekshirish",
         callback_data="check_sub"
     )])
 
-    msg = update.message or update.callback_query.message
-    await msg.reply_text(
-        "🔒 <b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>\n\n"
-        + "\n".join(f"• {ch}" for ch in not_subscribed),
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if msg:
+        await msg.reply_text(
+            "🔒 <b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>\n\n"
+            + "\n".join(f"• {name}" for name in channel_names),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
     return False
 
 
@@ -160,7 +173,9 @@ async def _check_edu_bot(update: Update) -> bool:
         return True
     result = await db.is_edu_user(user_id)
     if not result:
-        msg = update.message or update.callback_query.message
+        msg = update.message or (update.callback_query.message if update.callback_query else None)
+        if not msg:
+            return False
         await msg.reply_text(
             "📚 <b>Diqqat!</b>\n\n"
             f"Kinoni ko'rish uchun avval {config.EDU_BOT_USERNAME} botga "
@@ -340,8 +355,50 @@ async def category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "check_sub":
-        if await _check_subscriptions(update, ctx):
-            await query.edit_message_text("✅ Obuna tekshirildi! /start bosing.")
+        uid = query.from_user.id
+        channels = [ch for ch in config.REQUIRED_CHANNELS if ch]
+        not_subscribed_idx = []
+        for i, channel in enumerate(channels):
+            try:
+                member = await ctx.bot.get_chat_member(channel, uid)
+                if member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+                    not_subscribed_idx.append(i)
+            except Exception:
+                not_subscribed_idx.append(i)
+
+        if not not_subscribed_idx:
+            # Hammasi tekshirildi — xabarni o'zgartiramiz
+            await query.edit_message_text(
+                "✅ Obuna tasdiqlandi! Endi botdan foydalanishingiz mumkin.\n\n"
+                "/start bosing.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            # Hali ham obuna bo'lmagan kanallar bor
+            buttons = []
+            channel_names = []
+            for i in not_subscribed_idx:
+                ch = channels[i]
+                label = f"{i + 1}-kanal"
+                channel_names.append(label)
+                if ch.startswith("@"):
+                    url = f"https://t.me/{ch.lstrip('@')}"
+                else:
+                    url = ch
+                buttons.append([InlineKeyboardButton(
+                    f"📢 {label}ga obuna bo'lish", url=url
+                )])
+            buttons.append([InlineKeyboardButton(
+                "✅ Obuna bo'ldim — tekshirish",
+                callback_data="check_sub"
+            )])
+            await query.edit_message_text(
+                "❌ <b>Siz hali quyidagi kanallarga obuna bo'lmadingiz:</b>\n\n"
+                + "\n".join(f"• {name}" for name in channel_names)
+                + "\n\nObuna bo'lgach, tugmani qayta bosing.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
         return
 
     if data.startswith("fav_"):
