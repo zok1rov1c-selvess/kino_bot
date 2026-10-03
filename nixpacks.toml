@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["python311"]
+nixPkgs = ["python310", "gcc", "libpq", "pkg-config"]
 
 [phases.install]
-cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = [
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt --only-binary=:all: --prefer-binary"
+]
 
 [start]
 cmd = "python bot.py"
