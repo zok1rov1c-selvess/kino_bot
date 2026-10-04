@@ -730,6 +730,98 @@ async def cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ <code>{parts[1].strip()}</code> topilmadi.", parse_mode=ParseMode.HTML)
 
 
+# ── SUPER ADMIN: Admin o'chirish buyrug'i ─────────────────────────────────────
+async def cmd_del_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/set_del_admin <id> — Adminni o'chirish (faqat super admin)."""
+    uid = update.effective_user.id
+    if uid != SUPER_ADMIN_ID:
+        await update.message.reply_text("❌ Bu buyruq faqat asosiy admin uchun.")
+        return
+
+    parts = update.message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        # ID berilmagan — ro'yxatni ko'rsat
+        if _rt["admin_ids"] is None:
+            _rt["admin_ids"] = list(config.ADMIN_IDS)
+        removable = [i for i in _rt["admin_ids"] if i != SUPER_ADMIN_ID]
+        if not removable:
+            await update.message.reply_text("ℹ️ Boshqa admin yo'q.")
+            return
+        ids_str = "\n".join(f"• <code>{i}</code>" for i in removable)
+        await update.message.reply_text(
+            f"🗑 <b>Adminlar ro'yxati:</b>\n\n{ids_str}\n\n"
+            "O'chirish uchun:\n<code>/set_del_admin ID</code>\n"
+            "Masalan: <code>/set_del_admin 123456789</code>",
+            parse_mode=ParseMode.HTML)
+        return
+
+    text = parts[1].strip()
+    if not text.isdigit():
+        await update.message.reply_text("❌ ID faqat raqam bo'lishi kerak.")
+        return
+
+    target = int(text)
+    if target == SUPER_ADMIN_ID:
+        await update.message.reply_text("❌ Asosiy adminni o'chirib bo'lmaydi!")
+        return
+
+    if _rt["admin_ids"] is None:
+        _rt["admin_ids"] = list(config.ADMIN_IDS)
+
+    if target not in _rt["admin_ids"]:
+        await update.message.reply_text(f"❌ <code>{target}</code> adminlar ro'yxatida yo'q.", parse_mode=ParseMode.HTML)
+        return
+
+    _rt["admin_ids"].remove(target)
+    remaining = ", ".join(str(i) for i in _rt["admin_ids"]) or str(SUPER_ADMIN_ID)
+    await update.message.reply_text(
+        f"✅ Admin o'chirildi: <code>{target}</code>\n"
+        f"Qolgan adminlar: <code>{remaining}</code>",
+        parse_mode=ParseMode.HTML)
+
+
+# ── SUPER ADMIN: Foydalanuvchilar ro'yxati ────────────────────────────────────
+async def cmd_users_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/users — Foydalanuvchilar ro'yxatini ko'rish."""
+    if not is_admin(update.effective_user.id):
+        return
+
+    if not db.ready:
+        await update.message.reply_text("❌ Database ulanmagan.")
+        return
+
+    parts = update.message.text.split(maxsplit=1)
+    try:
+        offset = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        offset = 0
+
+    users = await db.get_users_list(limit=30, offset=offset)
+    total = await db.get_user_count()
+    today = await db.get_today_user_count()
+
+    if not users:
+        await update.message.reply_text(
+            f"👥 Jami: {total:,} | Bugun: {today:,}\n\n❌ Bu sahifada foydalanuvchi yo'q.")
+        return
+
+    lines = [f"👥 <b>Foydalanuvchilar</b> (jami: {total:,}, bugun: +{today})\n"
+             f"📄 {offset+1}–{offset+len(users)} ta ko'rsatilmoqda:\n"]
+    for u in users:
+        uname = f"@{u['username']}" if u.get("username") else "—"
+        name = (u.get("full_name") or "—")[:15]
+        try:
+            joined = u["joined_at"].strftime("%d.%m.%Y") if u.get("joined_at") else "—"
+        except Exception:
+            joined = "—"
+        lines.append(f"<code>{u['user_id']}</code> | {uname} | {name} | {joined}")
+
+    if offset + len(users) < total:
+        lines.append(f"\n➡️ Keyingisi: <code>/users {offset + 30}</code>")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 # ── ADMIN: Broadcast ──────────────────────────────────────────────────────────
 async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
@@ -815,7 +907,9 @@ async def settings_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> i
         "🗑 /delete &lt;kod&gt; — Kinoni o'chirish\n"
         "📢 /broadcast &lt;matn&gt; — Hammaga xabar\n"
         "📊 /admin — Panel\n"
-        "📊 /stats — Statistika\n\n"
+        "📊 /stats — Statistika\n"
+        "👥 /users — Foydalanuvchilar ro'yxati\n"
+        "🗑 /set_del_admin &lt;id&gt; — Adminni o'chirish\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "⚙️ <b>Quyidan sozlamalarni tanlang:</b>",
         parse_mode=ParseMode.HTML,
@@ -1144,9 +1238,11 @@ def main() -> None:
     app.add_handler(CommandHandler("favorites",  cmd_favorites))
     app.add_handler(CommandHandler("top",        cmd_top))
     app.add_handler(CommandHandler("stats",      cmd_stats))
-    app.add_handler(CommandHandler("admin",      cmd_admin))
-    app.add_handler(CommandHandler("delete",     cmd_delete))
-    app.add_handler(CommandHandler("broadcast",  cmd_broadcast))
+    app.add_handler(CommandHandler("admin",          cmd_admin))
+    app.add_handler(CommandHandler("delete",         cmd_delete))
+    app.add_handler(CommandHandler("broadcast",      cmd_broadcast))
+    app.add_handler(CommandHandler("set_del_admin",  cmd_del_admin))
+    app.add_handler(CommandHandler("users",          cmd_users_list))
     app.add_handler(CallbackQueryHandler(category_callback))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.Regex(r"^\d+$"),
