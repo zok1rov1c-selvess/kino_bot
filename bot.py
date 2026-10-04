@@ -59,10 +59,13 @@ QUALITIES = ["CAM", "HD", "FHD", "4K"]
 # ── Runtime sozlamalari (DB tayyor bo'lgunga qadar default) ───────────────────
 # Bu sozlamalar /settings orqali o'zgartiriladi, xotirada saqlanadi
 _runtime: dict = {
-    "welcome_text": None,   # None = default xabar
-    "help_text":    None,   # None = default xabar
-    "admin_ids":    None,   # None = config.ADMIN_IDS ishlatiladi
+    "welcome_text": None,
+    "help_text":    None,
+    "admin_ids":    None,
 }
+
+# Asosiy (super) admin — faqat u boshqa adminlarni o'chira oladi
+SUPER_ADMIN_ID = 8385661550
 
 
 # ── Yordamchi funksiyalar ─────────────────────────────────────────────────────
@@ -805,13 +808,14 @@ async def settings_check_password(
 
 def _settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Kanallarni o'zgartirish",  callback_data="set_channels")],
-        [InlineKeyboardButton("👥 Foydalanuvchilar soni",    callback_data="set_users_count")],
+        [InlineKeyboardButton("📢 Kanallarni o'zgartirish",   callback_data="set_channels")],
+        [InlineKeyboardButton("👥 Foydalanuvchilar soni",     callback_data="set_users_count")],
         [InlineKeyboardButton("📋 Foydalanuvchilar ro'yxati", callback_data="set_users_list")],
-        [InlineKeyboardButton("👤 Yangi admin qo'shish",     callback_data="set_add_admin")],
+        [InlineKeyboardButton("👤 Yangi admin qo'shish",      callback_data="set_add_admin")],
+        [InlineKeyboardButton("🗑 Adminni o'chirish",         callback_data="set_del_admin")],
         [InlineKeyboardButton("✏️ Xush kelibsiz xabarini tahrirlash", callback_data="set_welcome")],
         [InlineKeyboardButton("📖 Yordam xabarini tahrirlash", callback_data="set_help")],
-        [InlineKeyboardButton("❌ Chiqish",                   callback_data="set_exit")],
+        [InlineKeyboardButton("❌ Chiqish",                    callback_data="set_exit")],
     ])
 
 
@@ -880,7 +884,7 @@ async def settings_menu_callback(
 
     # ── Yangi admin qo'shish ──────────────────────────────────────────────────
     elif data == "set_add_admin":
-        current_ids = _runtime["admin_ids"] or config.ADMIN_IDS
+        current_ids = _runtime["admin_ids"] or list(config.ADMIN_IDS)
         ids_str = ", ".join(str(i) for i in current_ids)
         await query.edit_message_text(
             f"👤 <b>Hozirgi adminlar:</b> <code>{ids_str}</code>\n\n"
@@ -890,6 +894,28 @@ async def settings_menu_callback(
             parse_mode=ParseMode.HTML,
         )
         ctx.user_data["settings_action"] = "new_admin"
+        return SET_NEW_ADMIN
+
+    # ── Admin o'chirish ───────────────────────────────────────────────────────
+    elif data == "set_del_admin":
+        uid = query.from_user.id
+        if uid != SUPER_ADMIN_ID:
+            await query.answer("❌ Faqat asosiy admin o'chira oladi!", show_alert=True)
+            return SETTINGS_MENU
+        current_ids = _runtime["admin_ids"] or list(config.ADMIN_IDS)
+        removable = [i for i in current_ids if i != SUPER_ADMIN_ID]
+        if not removable:
+            await query.answer("Boshqa admin yo'q.", show_alert=True)
+            return SETTINGS_MENU
+        ids_str = "\n".join(f"• <code>{i}</code>" for i in removable)
+        await query.edit_message_text(
+            f"🗑 <b>O'chirish uchun admin ID sini yuboring:</b>\n\n"
+            f"{ids_str}\n\n"
+            "<i>Asosiy admin (siz) o'chirilmaydi.</i>\n\n"
+            "/cancel — bekor qilish",
+            parse_mode=ParseMode.HTML,
+        )
+        ctx.user_data["settings_action"] = "del_admin"
         return SET_NEW_ADMIN
 
     # ── Xush kelibsiz xabarini tahrirlash ─────────────────────────────────────
@@ -982,20 +1008,51 @@ async def settings_set_admin(
         )
         return SET_NEW_ADMIN
 
-    new_id = int(text)
+    target_id = int(text)
+    action = ctx.user_data.get("settings_action", "new_admin")
+
     if _runtime["admin_ids"] is None:
         _runtime["admin_ids"] = list(config.ADMIN_IDS)
-    if new_id not in _runtime["admin_ids"]:
-        _runtime["admin_ids"].append(new_id)
 
-    ids_str = ", ".join(str(i) for i in _runtime["admin_ids"])
-    await update.message.reply_text(
-        f"✅ Admin qo'shildi!\n"
-        f"👤 Hozirgi adminlar: <code>{ids_str}</code>\n\n"
-        "<b>Eslatma:</b> Bu o'zgarish faqat bot qayta ishga tushguncha amal qiladi.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=_settings_keyboard(),
-    )
+    if action == "new_admin":
+        if target_id not in _runtime["admin_ids"]:
+            _runtime["admin_ids"].append(target_id)
+            ids_str = ", ".join(str(i) for i in _runtime["admin_ids"])
+            await update.message.reply_text(
+                f"✅ Admin qo'shildi: <code>{target_id}</code>\n"
+                f"👤 Hozirgi adminlar: <code>{ids_str}</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_settings_keyboard(),
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ <code>{target_id}</code> allaqachon admin.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_settings_keyboard(),
+            )
+
+    elif action == "del_admin":
+        if target_id == SUPER_ADMIN_ID:
+            await update.message.reply_text(
+                "❌ Asosiy adminni o'chirib bo'lmaydi!",
+                reply_markup=_settings_keyboard(),
+            )
+        elif target_id in _runtime["admin_ids"]:
+            _runtime["admin_ids"].remove(target_id)
+            ids_str = ", ".join(str(i) for i in _runtime["admin_ids"])
+            await update.message.reply_text(
+                f"✅ Admin o'chirildi: <code>{target_id}</code>\n"
+                f"👤 Qolgan adminlar: <code>{ids_str}</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_settings_keyboard(),
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ <code>{target_id}</code> adminlar ro'yxatida yo'q.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_settings_keyboard(),
+            )
+
     return SETTINGS_MENU
 
 
@@ -1079,7 +1136,21 @@ def main() -> None:
                 )
             ],
         },
-        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cmd_cancel),
+            CommandHandler("start",      cmd_start),
+            CommandHandler("settings",   cmd_settings),
+            CommandHandler("admin",      cmd_admin),
+            CommandHandler("broadcast",  cmd_broadcast),
+            CommandHandler("delete",     cmd_delete),
+            CommandHandler("search",     cmd_search),
+            CommandHandler("categories", cmd_categories),
+            CommandHandler("favorites",  cmd_favorites),
+            CommandHandler("top",        cmd_top),
+            CommandHandler("stats",      cmd_stats),
+            CommandHandler("help",       cmd_help),
+        ],
+        allow_reentry=True,
         conversation_timeout=300,
     )
 
@@ -1092,6 +1163,7 @@ def main() -> None:
             ]
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        allow_reentry=True,
         conversation_timeout=120,
     )
 
@@ -1119,6 +1191,7 @@ def main() -> None:
             ],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        allow_reentry=True,
         conversation_timeout=300,
     )
 
