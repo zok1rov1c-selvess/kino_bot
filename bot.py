@@ -805,6 +805,7 @@ async def settings_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("❌ Noto'g'ri parol. Qayta urinib ko'ring yoki /cancel.")
         return SETTINGS_PASSWORD
 
+    # Parol to'g'ri — barcha buyruqlar + panel bitta xabarda
     await update.message.reply_text(
         "✅ <b>Xush kelibsiz, Admin!</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -815,12 +816,11 @@ async def settings_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> i
         "📢 /broadcast &lt;matn&gt; — Hammaga xabar\n"
         "📊 /admin — Panel\n"
         "📊 /stats — Statistika\n\n"
-        "👤 /start /search /categories /favorites /top /help",
-        parse_mode=ParseMode.HTML)
-    await update.message.reply_text(
-        "⚙️ <b>Sozlamalar paneli</b>",
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚙️ <b>Quyidan sozlamalarni tanlang:</b>",
         parse_mode=ParseMode.HTML,
-        reply_markup=_settings_kb())
+        reply_markup=_settings_kb(),
+    )
     return SETTINGS_MENU
 
 
