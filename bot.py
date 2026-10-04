@@ -29,8 +29,14 @@ log = logging.getLogger(__name__)
     ADD_FILE,
     ADD_POSTER,
     ADD_TITLE,
-    ADD_META,
+    ADD_CATEGORY,
+    ADD_YEAR,
+    ADD_COUNTRY,
+    ADD_LANGUAGE,
+    ADD_QUALITY,
+    ADD_DESCRIPTION,
     ADD_CONFIRM,
+    ADD_EDIT,
     SEARCH_QUERY,
     SETTINGS_PASSWORD,
     SETTINGS_MENU,
@@ -38,7 +44,7 @@ log = logging.getLogger(__name__)
     SET_WELCOME,
     SET_HELP_TEXT,
     SET_NEW_ADMIN,
-) = range(12)
+) = range(18)
 
 # ── Konstantalar ──────────────────────────────────────────────────────────────
 GENRES = [
@@ -517,6 +523,71 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ADMIN: KINO QO'SHISH
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _category_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 Kino",       callback_data="add_type_kino"),
+         InlineKeyboardButton("📺 Serial",     callback_data="add_type_serial")],
+        [InlineKeyboardButton("🎠 Multfilm",   callback_data="add_type_multfilm"),
+         InlineKeyboardButton("🎭 Shounomas",  callback_data="add_type_shounomas")],
+        [InlineKeyboardButton("── Janrlar ──", callback_data="add_noop")],
+        [InlineKeyboardButton("😂 Komediya",   callback_data="add_genre_Komediya"),
+         InlineKeyboardButton("🎭 Drama",      callback_data="add_genre_Drama")],
+        [InlineKeyboardButton("👻 Ujas",       callback_data="add_genre_Ujas"),
+         InlineKeyboardButton("🔪 Triller",    callback_data="add_genre_Triller")],
+        [InlineKeyboardButton("💕 Romantik",   callback_data="add_genre_Romantik"),
+         InlineKeyboardButton("🚀 Fantastika", callback_data="add_genre_Fantastika")],
+        [InlineKeyboardButton("💥 Jangari",    callback_data="add_genre_Jangari"),
+         InlineKeyboardButton("🗺 Sarguzasht", callback_data="add_genre_Sarguzasht")],
+        [InlineKeyboardButton("🎨 Animatsiya", callback_data="add_genre_Animatsiya"),
+         InlineKeyboardButton("📜 Tarixiy",    callback_data="add_genre_Tarixiy")],
+        [InlineKeyboardButton("🏆 Sport",      callback_data="add_genre_Sport"),
+         InlineKeyboardButton("👨‍👩‍👧 Oilaviy",  callback_data="add_genre_Oilaviy")],
+        [InlineKeyboardButton("✅ Shunday davom etish", callback_data="add_cat_skip")],
+    ])
+
+
+def _quality_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 480p",          callback_data="add_quality_480p")],
+        [InlineKeyboardButton("🎬 720p HD",       callback_data="add_quality_720p")],
+        [InlineKeyboardButton("🎥 1080p Full HD", callback_data="add_quality_1080p")],
+    ])
+
+
+def _format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "Noma'lum"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    if hours > 0:
+        return f"{hours} soat {minutes} daqiqa"
+    return f"{minutes} daqiqa"
+
+
+def _confirmation_text(d: dict) -> str:
+    return (
+        f"📋 <b>Kino ma'lumotlari:</b>\n\n"
+        f"📌 Kod: <code>{d.get('code', '—')}</code>\n"
+        f"🎬 Nom: <b>{d.get('title', '—')}</b>\n"
+        f"📺 Tur: {TYPES.get(d.get('type', 'kino'), d.get('type', '—'))}\n"
+        f"🎭 Janr: {d.get('genre', '—') or '—'}\n"
+        f"📅 Yil: {d.get('year', '—') or '—'}\n"
+        f"🌍 Mamlakat: {d.get('country', '—') or '—'}\n"
+        f"🗣 Til: {d.get('language', '—') or '—'}\n"
+        f"📽 Sifat: {d.get('quality', '—') or '—'}\n"
+        f"⏱ Davomiyligi: {d.get('duration', '—') or '—'}\n"
+        f"📝 Tavsif: {(d.get('description') or '—')[:100]}"
+    )
+
+
+def _confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Tasdiqlash",   callback_data="add_confirm_yes")],
+        [InlineKeyboardButton("✏️ Tahrirlash",   callback_data="add_confirm_edit")],
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="add_confirm_cancel")],
+    ])
+
+
 async def cmd_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Ruxsat yo'q.")
@@ -524,20 +595,37 @@ async def cmd_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     ctx.user_data.clear()
     ctx.user_data["adding"] = {}
     await update.message.reply_text(
-        "➕ <b>Yangi kino qo'shish</b>\n\n1️⃣ Video faylni yuboring:",
+        "➕ <b>Yangi kino qo'shish</b>\n\n"
+        "1️⃣ <b>Video faylni yuboring:</b>\n"
+        "<i>(Sifat saqlanishi uchun 'Fayl sifatida yuborish' ni tanlang)</i>",
         parse_mode=ParseMode.HTML,
     )
     return ADD_FILE
 
 
 async def add_receive_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message.video and not update.message.document:
-        await update.message.reply_text("❌ Video fayl yuboring.")
+    msg = update.message
+    video = msg.video or msg.document
+    if not video:
+        await msg.reply_text("❌ Video fayl yuboring.")
         return ADD_FILE
-    file_id = (update.message.video or update.message.document).file_id
-    ctx.user_data["adding"]["file_id"] = file_id
-    await update.message.reply_text(
-        "✅ Video qabul qilindi.\n\n2️⃣ Poster (rasm) yuboring yoki /skip:"
+
+    d = ctx.user_data["adding"]
+    d["file_id"] = video.file_id
+
+    # Davomiylikni avtomatik aniqlash
+    duration_sec = 0
+    if msg.video and msg.video.duration:
+        duration_sec = msg.video.duration
+    d["duration"] = _format_duration(duration_sec)
+
+    dur_text = f"⏱ Davomiyligi: <b>{d['duration']}</b>" if duration_sec > 0 \
+               else "⏱ Davomiylik aniqlanmadi"
+
+    await msg.reply_text(
+        f"✅ Video qabul qilindi. {dur_text}\n\n"
+        "2️⃣ <b>Poster (rasm) yuboring yoki /skip:</b>",
+        parse_mode=ParseMode.HTML,
     )
     return ADD_POSTER
 
@@ -545,101 +633,307 @@ async def add_receive_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
 async def add_receive_poster(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.photo:
         ctx.user_data["adding"]["poster_id"] = update.message.photo[-1].file_id
-    await update.message.reply_text("3️⃣ Kino nomini yozing:")
+    else:
+        ctx.user_data["adding"]["poster_id"] = ""
+    await update.message.reply_text(
+        "3️⃣ <b>Kino nomini yozing:</b>", parse_mode=ParseMode.HTML
+    )
     return ADD_TITLE
 
 
 async def add_skip_poster(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     ctx.user_data["adding"]["poster_id"] = ""
-    await update.message.reply_text("3️⃣ Kino nomini yozing:")
+    await update.message.reply_text(
+        "3️⃣ <b>Kino nomini yozing:</b>", parse_mode=ParseMode.HTML
+    )
     return ADD_TITLE
 
 
 async def add_receive_title(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     ctx.user_data["adding"]["title"] = update.message.text.strip()
     await update.message.reply_text(
-        "4️⃣ Kino ma'lumotlarini quyidagi formatda yozing:\n\n"
-        "<code>kod: 1267\n"
-        "tur: kino\n"
-        "janr: Komediya\n"
-        "yil: 2024\n"
-        "mamlakat: AQSh\n"
-        "til: O'zbek\n"
-        "sifat: HD\n"
-        "davomiyligi: 2 soat\n"
-        "tavsif: Qisqa tavsif</code>\n\n"
-        "(<i>Faqat 'kod' majburiy</i>)",
+        "4️⃣ <b>Kategoriya va janrni tanlang:</b>\n"
+        "<i>Avval turni, keyin janrni tanlang</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_category_keyboard(),
+    )
+    return ADD_CATEGORY
+
+
+async def add_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    d = ctx.user_data["adding"]
+
+    if data == "add_noop":
+        return ADD_CATEGORY
+
+    if data == "add_cat_skip":
+        if "type" not in d:
+            d["type"] = "kino"
+        if "genre" not in d:
+            d["genre"] = ""
+        await query.edit_message_text(
+            "5️⃣ <b>Yilini yozing yoki /skip:</b>\n<i>Masalan: 2024</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return ADD_YEAR
+
+    if data.startswith("add_type_"):
+        d["type"] = data.replace("add_type_", "")
+        type_name = TYPES.get(d["type"], d["type"])
+        await query.edit_message_text(
+            f"✅ Tur: <b>{type_name}</b>\n\n"
+            "Janr tanlang yoki <b>✅ Shunday davom etish</b> ni bosing:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_category_keyboard(),
+        )
+        return ADD_CATEGORY
+
+    if data.startswith("add_genre_"):
+        d["genre"] = data.replace("add_genre_", "")
+        if "type" not in d:
+            d["type"] = "kino"
+        await query.edit_message_text(
+            f"✅ Janr: <b>{d['genre']}</b>\n\n"
+            "5️⃣ <b>Yilini yozing yoki /skip:</b>\n<i>Masalan: 2024</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return ADD_YEAR
+
+    return ADD_CATEGORY
+
+
+async def add_receive_year(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    ctx.user_data["adding"]["year"] = int(text) if text.isdigit() else None
+    await update.message.reply_text(
+        "6️⃣ <b>Mamlakati:</b>\n<i>Masalan: AQSh, Hindiston</i>\n\nYoki /skip",
         parse_mode=ParseMode.HTML,
     )
-    return ADD_META
+    return ADD_COUNTRY
 
 
-async def add_receive_meta(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    meta = {}
-    for line in text.split("\n"):
-        if ":" in line:
-            key, _, val = line.partition(":")
-            meta[key.strip().lower()] = val.strip()
-
-    d = ctx.user_data["adding"]
-    d["code"]        = meta.get("kod", "")
-    d["type"]        = meta.get("tur", "kino").lower()
-    d["genre"]       = meta.get("janr", "")
-    d["year"]        = int(meta["yil"]) if meta.get("yil", "").isdigit() else None
-    d["country"]     = meta.get("mamlakat", "")
-    d["language"]    = meta.get("til", "O'zbek")
-    d["quality"]     = meta.get("sifat", "HD").upper()
-    d["duration"]    = meta.get("davomiyligi", "")
-    d["description"] = meta.get("tavsif", "")
-
-    if not d["code"]:
-        await update.message.reply_text("❌ 'kod' majburiy. Qaytadan yozing.")
-        return ADD_META
-
-    caption = (
-        f"✅ <b>Tasdiqlash</b>\n\n"
-        f"📌 Kod: <code>{d['code']}</code>\n"
-        f"🎬 Nom: <b>{d['title']}</b>\n"
-        f"📺 Tur: {TYPES.get(d['type'], d['type'])}\n"
-        f"🎭 Janr: {d['genre']}\n"
-        f"📅 Yil: {d['year']}\n"
-        f"🌍 Mamlakat: {d['country']}\n"
-        f"🗣 Til: {d['language']}\n"
-        f"📽 Sifat: {d['quality']}\n"
-        f"⏱ Davomiyligi: {d['duration']}\n"
-        f"📝 Tavsif: {d['description'][:100]}"
+async def add_skip_year(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    ctx.user_data["adding"]["year"] = None
+    await update.message.reply_text(
+        "6️⃣ <b>Mamlakati:</b>\n<i>Masalan: AQSh, Hindiston</i>\n\nYoki /skip",
+        parse_mode=ParseMode.HTML,
     )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_add"),
-        InlineKeyboardButton("❌ Bekor",     callback_data="cancel_add"),
-    ]])
-    await update.message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=kb)
+    return ADD_COUNTRY
+
+
+async def add_receive_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    ctx.user_data["adding"]["country"] = update.message.text.strip()
+    await update.message.reply_text(
+        "7️⃣ <b>Video tili:</b>\n<i>Masalan: O'zbek, Rus, Ingliz</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADD_LANGUAGE
+
+
+async def add_skip_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    ctx.user_data["adding"]["country"] = ""
+    await update.message.reply_text(
+        "7️⃣ <b>Video tili:</b>\n<i>Masalan: O'zbek, Rus, Ingliz</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADD_LANGUAGE
+
+
+async def add_receive_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    ctx.user_data["adding"]["language"] = update.message.text.strip()
+    await update.message.reply_text(
+        "8️⃣ <b>Video sifatini tanlang:</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_quality_keyboard(),
+    )
+    return ADD_QUALITY
+
+
+async def add_quality_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    quality_map = {
+        "add_quality_480p":  "480p",
+        "add_quality_720p":  "720p HD",
+        "add_quality_1080p": "1080p Full HD",
+    }
+    if query.data not in quality_map:
+        return ADD_QUALITY
+    ctx.user_data["adding"]["quality"] = quality_map[query.data]
+    await query.edit_message_text(
+        f"✅ Sifat: <b>{quality_map[query.data]}</b>\n\n"
+        "9️⃣ <b>Kino kodini yozing:</b>\n<i>Masalan: 1267</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADD_CONFIRM
+
+
+async def add_receive_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """Kod qabul qilib tavsifga o'tadi."""
+    code = update.message.text.strip()
+    if not code.isdigit():
+        await update.message.reply_text(
+            "❌ Kod faqat raqamlardan iborat bo'lishi kerak. Qayta yozing:"
+        )
+        return ADD_CONFIRM
+    ctx.user_data["adding"]["code"] = code
+    await update.message.reply_text(
+        "🔟 <b>Tavsif yozing yoki /skip:</b>\n<i>Kino haqida qisqa ma'lumot</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADD_DESCRIPTION
+
+
+async def add_receive_description(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    ctx.user_data["adding"]["description"] = update.message.text.strip()
+    d = ctx.user_data["adding"]
+    await update.message.reply_text(
+        _confirmation_text(d),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_confirmation_keyboard(),
+    )
+    return ADD_CONFIRM
+
+
+async def add_skip_description(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    ctx.user_data["adding"]["description"] = ""
+    d = ctx.user_data["adding"]
+    await update.message.reply_text(
+        _confirmation_text(d),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_confirmation_keyboard(),
+    )
     return ADD_CONFIRM
 
 
 async def add_confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    data = query.data
 
-    if query.data == "cancel_add":
+    if data == "add_confirm_cancel":
         ctx.user_data.clear()
         await query.edit_message_text("❌ Bekor qilindi.")
         return ConversationHandler.END
 
-    d = ctx.user_data.get("adding", {})
-    try:
-        movie_id = await db.add_movie(d)
+    if data == "add_confirm_yes":
+        d = ctx.user_data.get("adding", {})
+        if not d.get("code"):
+            await query.message.reply_text(
+                "🔢 <b>Kino kodini yozing:</b>\n<i>Masalan: 1267</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return ADD_CONFIRM
+        try:
+            movie_id = await db.add_movie(d)
+            await query.edit_message_text(
+                f"✅ <b>'{d['title']}'</b> muvaffaqiyatli qo'shildi!\n"
+                f"📌 Kod: <code>{d['code']}</code>\n"
+                f"🆔 ID: {movie_id}",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Xato: {e}")
+        ctx.user_data.clear()
+        return ConversationHandler.END
+
+    if data == "add_confirm_edit":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📌 Kodni o'zgartirish",     callback_data="edit_code")],
+            [InlineKeyboardButton("🎬 Nomni o'zgartirish",     callback_data="edit_title")],
+            [InlineKeyboardButton("📺 Tur/Janr o'zgartirish",  callback_data="edit_category")],
+            [InlineKeyboardButton("📅 Yilni o'zgartirish",     callback_data="edit_year")],
+            [InlineKeyboardButton("🌍 Mamlakat o'zgartirish",  callback_data="edit_country")],
+            [InlineKeyboardButton("🗣 Tilni o'zgartirish",     callback_data="edit_language")],
+            [InlineKeyboardButton("📽 Sifat o'zgartirish",     callback_data="edit_quality")],
+            [InlineKeyboardButton("📝 Tavsif o'zgartirish",    callback_data="edit_desc")],
+            [InlineKeyboardButton("◀️ Orqaga",                 callback_data="edit_back")],
+        ])
         await query.edit_message_text(
-            f"✅ <b>'{d['title']}'</b> qo'shildi!\n"
-            f"📌 Kod: <code>{d['code']}</code>\n"
-            f"🆔 ID: {movie_id}",
-            parse_mode=ParseMode.HTML,
+            "✏️ <b>Nimani o'zgartirmoqchisiz?</b>",
+            parse_mode=ParseMode.HTML, reply_markup=kb,
         )
-    except Exception as e:
-        await query.edit_message_text(f"❌ Xato: {e}")
-    ctx.user_data.clear()
-    return ConversationHandler.END
+        return ADD_EDIT
+
+    return ADD_CONFIRM
+
+
+async def add_edit_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "edit_back":
+        d = ctx.user_data.get("adding", {})
+        await query.edit_message_text(
+            _confirmation_text(d),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_confirmation_keyboard(),
+        )
+        return ADD_CONFIRM
+
+    if data == "edit_category":
+        await query.edit_message_text(
+            "4️⃣ <b>Yangi kategoriya tanlang:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_category_keyboard(),
+        )
+        ctx.user_data["edit_mode"] = True
+        return ADD_CATEGORY
+
+    if data == "edit_quality":
+        await query.edit_message_text(
+            "8️⃣ <b>Yangi sifatni tanlang:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_quality_keyboard(),
+        )
+        ctx.user_data["edit_mode"] = True
+        return ADD_QUALITY
+
+    prompts = {
+        "edit_code":     "📌 Yangi kodni yozing:",
+        "edit_title":    "🎬 Yangi nomni yozing:",
+        "edit_year":     "📅 Yangi yilni yozing (yoki /skip):",
+        "edit_country":  "🌍 Yangi mamlakatni yozing (yoki /skip):",
+        "edit_language": "🗣 Yangi tilni yozing:",
+        "edit_desc":     "📝 Yangi tavsifni yozing (yoki /skip):",
+    }
+    if data in prompts:
+        await query.message.reply_text(prompts[data], parse_mode=ParseMode.HTML)
+        ctx.user_data["edit_field"] = data
+        return ADD_EDIT
+
+    return ADD_EDIT
+
+
+async def add_edit_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    field = ctx.user_data.get("edit_field", "")
+    text = update.message.text.strip()
+    d = ctx.user_data["adding"]
+
+    field_map = {
+        "edit_code":     ("code",        text),
+        "edit_title":    ("title",       text),
+        "edit_year":     ("year",        int(text) if text.isdigit() else None),
+        "edit_country":  ("country",     text),
+        "edit_language": ("language",    text),
+        "edit_desc":     ("description", text),
+    }
+    if field in field_map:
+        key, val = field_map[field]
+        d[key] = val
+
+    ctx.user_data.pop("edit_field", None)
+    await update.message.reply_text(
+        _confirmation_text(d),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_confirmation_keyboard(),
+    )
+    return ADD_CONFIRM
+
 
 
 # ── ADMIN: Kino o'chirish ─────────────────────────────────────────────────────
@@ -1118,7 +1412,7 @@ def main() -> None:
         entry_points=[CommandHandler("add", cmd_add)],
         states={
             ADD_FILE: [
-                MessageHandler(filters.VIDEO | filters.Document.VIDEO, add_receive_file)
+                MessageHandler(filters.VIDEO | filters.Document.VIDEO | filters.Document.ALL, add_receive_file)
             ],
             ADD_POSTER: [
                 MessageHandler(filters.PHOTO, add_receive_poster),
@@ -1127,17 +1421,40 @@ def main() -> None:
             ADD_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_title)
             ],
-            ADD_META: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_meta)
+            ADD_CATEGORY: [
+                CallbackQueryHandler(add_category_callback, pattern=r"^add_(type_|genre_|noop|cat_skip)")
             ],
+            ADD_YEAR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_year),
+                CommandHandler("skip", add_skip_year),
+            ],
+            ADD_COUNTRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_country),
+                CommandHandler("skip", add_skip_country),
+            ],
+            ADD_LANGUAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_language)
+            ],
+            ADD_QUALITY: [
+                CallbackQueryHandler(add_quality_callback, pattern=r"^add_quality_")
+            ],
+            ADD_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_description),
+                CommandHandler("skip", add_skip_description),
+            ],
+
             ADD_CONFIRM: [
-                CallbackQueryHandler(
-                    add_confirm_callback, pattern=r"^(confirm|cancel)_add$"
-                )
+                CallbackQueryHandler(add_confirm_callback, pattern=r"^add_confirm_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_code),
+            ],
+            ADD_EDIT: [
+                CallbackQueryHandler(add_edit_callback, pattern=r"^edit_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_edit_text),
+                CommandHandler("skip", add_edit_text),
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", cmd_cancel),
+            CommandHandler("cancel",     cmd_cancel),
             CommandHandler("start",      cmd_start),
             CommandHandler("settings",   cmd_settings),
             CommandHandler("admin",      cmd_admin),
@@ -1151,7 +1468,7 @@ def main() -> None:
             CommandHandler("help",       cmd_help),
         ],
         allow_reentry=True,
-        conversation_timeout=300,
+        conversation_timeout=600,
     )
 
     # ── Qidiruv conversation ──────────────────────────────────────────────────
