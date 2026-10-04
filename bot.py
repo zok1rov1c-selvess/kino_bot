@@ -911,7 +911,11 @@ async def add_edit_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> i
 
 async def add_edit_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     field = ctx.user_data.get("edit_field", "")
-    text = update.message.text.strip()
+    # /skip buyrug'i bo'lsa — bo'sh string
+    if update.message.text and update.message.text.startswith("/skip"):
+        text = ""
+    else:
+        text = update.message.text.strip() if update.message.text else ""
     d = ctx.user_data["adding"]
 
     field_map = {
@@ -1156,24 +1160,39 @@ async def settings_menu_callback(
     elif data == "set_users_list":
         users = await db.get_users_list(limit=50)
         if not users:
-            text = "❌ Foydalanuvchilar topilmadi."
-        else:
-            lines = [f"📋 <b>So'nggi {len(users)} ta foydalanuvchi:</b>\n"]
-            for u in users:
-                uname = f"@{u['username']}" if u.get("username") else "—"
-                name  = u.get("full_name") or "—"
-                joined = u["joined_at"].strftime("%d.%m.%Y") if u.get("joined_at") else "—"
-                lines.append(
-                    f"👤 <code>{u['user_id']}</code> | {uname} | {name} | {joined}"
-                )
-            text = "\n".join(lines)
+            await query.edit_message_text(
+                "❌ Foydalanuvchilar topilmadi.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Orqaga", callback_data="set_back")
+                ]])
+            )
+            return SETTINGS_MENU
+
+        # Xabarni bo'lib yuborish (Telegram 4096 belgi limiti)
+        lines = [f"📋 <b>So'nggi {len(users)} ta foydalanuvchi:</b>\n"]
+        for u in users:
+            uname  = f"@{u['username']}" if u.get("username") else "—"
+            name   = (u.get("full_name") or "—")[:20]
+            joined = u["joined_at"].strftime("%d.%m.%Y") if u.get("joined_at") else "—"
+            lines.append(f"<code>{u['user_id']}</code> | {uname} | {name} | {joined}")
+
+        # Bo'lib yuborish: har 30 ta user
+        chunk_size = 30
+        chunks = [lines[:1] + lines[1 + i:1 + i + chunk_size]
+                  for i in range(0, len(lines) - 1, chunk_size)]
+
         await query.edit_message_text(
-            text,
+            "\n".join(chunks[0]),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("◀️ Orqaga", callback_data="set_back")
             ]])
         )
+        # Qolgan chunklar yangi xabar sifatida
+        for chunk in chunks[1:]:
+            await query.message.reply_text(
+                "\n".join(chunk), parse_mode=ParseMode.HTML
+            )
         return SETTINGS_MENU
 
     # ── Yangi admin qo'shish ──────────────────────────────────────────────────
@@ -1196,8 +1215,10 @@ async def settings_menu_callback(
         if uid != SUPER_ADMIN_ID:
             await query.answer("❌ Faqat asosiy admin o'chira oladi!", show_alert=True)
             return SETTINGS_MENU
-        current_ids = _runtime["admin_ids"] or list(config.ADMIN_IDS)
-        removable = [i for i in current_ids if i != SUPER_ADMIN_ID]
+        # Avval runtime admin_ids ni to'g'ri holga keltiramiz
+        if _runtime["admin_ids"] is None:
+            _runtime["admin_ids"] = list(config.ADMIN_IDS)
+        removable = [i for i in _runtime["admin_ids"] if i != SUPER_ADMIN_ID]
         if not removable:
             await query.answer("Boshqa admin yo'q.", show_alert=True)
             return SETTINGS_MENU
@@ -1305,25 +1326,20 @@ async def settings_set_admin(
     target_id = int(text)
     action = ctx.user_data.get("settings_action", "new_admin")
 
+    # Har doim list sifatida ishlaymiz
     if _runtime["admin_ids"] is None:
         _runtime["admin_ids"] = list(config.ADMIN_IDS)
 
     if action == "new_admin":
         if target_id not in _runtime["admin_ids"]:
             _runtime["admin_ids"].append(target_id)
-            ids_str = ", ".join(str(i) for i in _runtime["admin_ids"])
-            await update.message.reply_text(
-                f"✅ Admin qo'shildi: <code>{target_id}</code>\n"
-                f"👤 Hozirgi adminlar: <code>{ids_str}</code>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=_settings_keyboard(),
-            )
-        else:
-            await update.message.reply_text(
-                f"⚠️ <code>{target_id}</code> allaqachon admin.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=_settings_keyboard(),
-            )
+        ids_str = ", ".join(str(i) for i in _runtime["admin_ids"])
+        await update.message.reply_text(
+            f"✅ Admin qo'shildi: <code>{target_id}</code>\n"
+            f"👤 Hozirgi adminlar: <code>{ids_str}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_settings_keyboard(),
+        )
 
     elif action == "del_admin":
         if target_id == SUPER_ADMIN_ID:
@@ -1333,7 +1349,7 @@ async def settings_set_admin(
             )
         elif target_id in _runtime["admin_ids"]:
             _runtime["admin_ids"].remove(target_id)
-            ids_str = ", ".join(str(i) for i in _runtime["admin_ids"])
+            ids_str = ", ".join(str(i) for i in _runtime["admin_ids"]) or "Faqat siz"
             await update.message.reply_text(
                 f"✅ Admin o'chirildi: <code>{target_id}</code>\n"
                 f"👤 Qolgan adminlar: <code>{ids_str}</code>",
@@ -1342,11 +1358,17 @@ async def settings_set_admin(
             )
         else:
             await update.message.reply_text(
-                f"❌ <code>{target_id}</code> adminlar ro'yxatida yo'q.",
+                f"❌ <code>{target_id}</code> adminlar ro'yxatida yo'q.\n"
+                "Ro'yxatdagi ID ni yuboring.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_settings_keyboard(),
             )
+    else:
+        await update.message.reply_text(
+            "❓ Noma'lum amal.", reply_markup=_settings_keyboard()
+        )
 
+    ctx.user_data.pop("settings_action", None)
     return SETTINGS_MENU
 
 
@@ -1422,7 +1444,7 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_title)
             ],
             ADD_CATEGORY: [
-                CallbackQueryHandler(add_category_callback, pattern=r"^add_(type_|genre_|noop|cat_skip)")
+                CallbackQueryHandler(add_category_callback, pattern=r"^add_(type|genre|noop|cat)_")
             ],
             ADD_YEAR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_receive_year),
@@ -1450,7 +1472,6 @@ def main() -> None:
             ADD_EDIT: [
                 CallbackQueryHandler(add_edit_callback, pattern=r"^edit_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_edit_text),
-                CommandHandler("skip", add_edit_text),
             ],
         },
         fallbacks=[
