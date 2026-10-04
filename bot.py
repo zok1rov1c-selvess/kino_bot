@@ -841,6 +841,7 @@ async def settings_menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
     q = update.callback_query
     await q.answer()
     data = q.data
+    log.info("settings_menu_cb called with data=%s from user=%s", data, q.from_user.id)
 
     if data == "s_back":
         await q.edit_message_text("⚙️ <b>Sozlamalar paneli</b>",
@@ -862,27 +863,45 @@ async def settings_menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
         return SETTINGS_MENU
 
     if data == "s_ulist":
+        if not db.ready:
+            await q.edit_message_text(
+                "❌ Database ulanmagan.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Orqaga", callback_data="s_back")]]))
+            return SETTINGS_MENU
         users = await db.get_users_list(limit=50)
         if not users:
-            await q.edit_message_text("❌ Foydalanuvchilar topilmadi.",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Orqaga", callback_data="s_back")]]))
+            await q.edit_message_text(
+                "❌ Foydalanuvchilar topilmadi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Orqaga", callback_data="s_back")]]))
             return SETTINGS_MENU
-        # Bo'lib yuborish
         lines = []
         for u in users:
             uname = f"@{u['username']}" if u.get("username") else "—"
-            name = (u.get("full_name") or "—")[:15]
-            joined = u["joined_at"].strftime("%d.%m.%Y") if u.get("joined_at") else "—"
+            name = (u.get("full_name") or "—")[:12]
+            joined = u["joined_at"].strftime("%d.%m") if u.get("joined_at") else "—"
             lines.append(f"<code>{u['user_id']}</code> | {uname} | {name} | {joined}")
 
+        # Birinchi xabar edit orqali (max 4096 belgi)
         header = f"📋 <b>Foydalanuvchilar ({len(users)} ta):</b>\n\n"
-        # Birinchi 25 tasi edit da, qolgani yangi xabar
-        chunk1 = header + "\n".join(lines[:25])
+        first_chunk = header + "\n".join(lines[:20])
+        if len(first_chunk) > 4000:
+            first_chunk = header + "\n".join(lines[:10])
+
         await q.edit_message_text(
-            chunk1, parse_mode=ParseMode.HTML,
+            first_chunk,
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Orqaga", callback_data="s_back")]]))
-        if len(lines) > 25:
-            await q.message.reply_text("\n".join(lines[25:]), parse_mode=ParseMode.HTML)
+
+        # Qolganlarni yangi xabar sifatida
+        remaining = lines[20:] if len(header + "\n".join(lines[:20])) <= 4000 else lines[10:]
+        chunk = []
+        for line in remaining:
+            chunk.append(line)
+            if len(chunk) >= 20:
+                await q.message.reply_text("\n".join(chunk), parse_mode=ParseMode.HTML)
+                chunk = []
+        if chunk:
+            await q.message.reply_text("\n".join(chunk), parse_mode=ParseMode.HTML)
         return SETTINGS_MENU
 
     if data == "s_channels":
@@ -907,14 +926,14 @@ async def settings_menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
     if data == "s_deladmin":
         # Faqat super admin
         if q.from_user.id != SUPER_ADMIN_ID:
-            await q.answer("❌ Faqat asosiy admin o'chira oladi!", show_alert=True)
+            await q.message.reply_text("❌ Faqat asosiy admin o'chira oladi!")
             return SETTINGS_MENU
         # Admin listini initialize qilamiz
         if _rt["admin_ids"] is None:
             _rt["admin_ids"] = list(config.ADMIN_IDS)
         removable = [i for i in _rt["admin_ids"] if i != SUPER_ADMIN_ID]
         if not removable:
-            await q.answer("Boshqa admin yo'q!", show_alert=True)
+            await q.message.reply_text("ℹ️ Boshqa admin yo'q.")
             return SETTINGS_MENU
         ids_str = "\n".join(f"• <code>{i}</code>" for i in removable)
         await q.edit_message_text(
