@@ -126,10 +126,38 @@ class KinoDB:
                         PRIMARY KEY (user_id, movie_id)
                     );
 
+                    -- Payme tranzaksiyalari
+                    CREATE TABLE IF NOT EXISTS payme_transactions (
+                        id             SERIAL PRIMARY KEY,
+                        transaction_id TEXT UNIQUE NOT NULL,
+                        user_id        BIGINT NOT NULL,
+                        tariff         TEXT NOT NULL,
+                        amount         BIGINT NOT NULL,
+                        state          INTEGER DEFAULT 1,
+                        create_time    BIGINT,
+                        perform_time   BIGINT DEFAULT 0,
+                        cancel_time    BIGINT DEFAULT 0,
+                        reason         INTEGER,
+                        created_at     TIMESTAMPTZ DEFAULT NOW()
+                    );
+
+                    -- Foydalanuvchi obunalari
+                    CREATE TABLE IF NOT EXISTS subscriptions (
+                        id          SERIAL PRIMARY KEY,
+                        user_id     BIGINT UNIQUE NOT NULL,
+                        tariff      TEXT NOT NULL,
+                        is_vip      BOOLEAN DEFAULT FALSE,
+                        expires_at  TIMESTAMPTZ,
+                        created_at  TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at  TIMESTAMPTZ DEFAULT NOW()
+                    );
+
                     CREATE INDEX IF NOT EXISTS idx_movies_code   ON movies(code);
                     CREATE INDEX IF NOT EXISTS idx_movies_type   ON movies(type);
                     CREATE INDEX IF NOT EXISTS idx_movies_genre  ON movies(genre);
                     CREATE INDEX IF NOT EXISTS idx_history_user  ON watch_history(user_id, watched_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_payme_trans   ON payme_transactions(transaction_id);
+                    CREATE INDEX IF NOT EXISTS idx_subs_user     ON subscriptions(user_id);
                 """)
         log.info("Jadvallar tayyor ✅")
 
@@ -445,6 +473,93 @@ class KinoDB:
             (code,)
         )
         return status != "UPDATE 0"
+
+    # ── Payme: Tranzaksiya ────────────────────────────────────────────────────
+    async def payme_create_transaction(self, transaction_id: str, user_id: int,
+                                       tariff: str, amount: int, create_time: int) -> None:
+        if not self.ready:
+            return
+        await asyncio.to_thread(
+            self._execute,
+            """INSERT INTO payme_transactions
+               (transaction_id, user_id, tariff, amount, state, create_time)
+               VALUES (%s, %s, %s, %s, 1, %s)
+               ON CONFLICT (transaction_id) DO NOTHING""",
+            (transaction_id, user_id, tariff, amount, create_time)
+        )
+
+    async def payme_get_transaction(self, transaction_id: str) -> Optional[dict]:
+        if not self.ready:
+            return None
+        return await asyncio.to_thread(
+            self._fetchone,
+            "SELECT * FROM payme_transactions WHERE transaction_id=%s",
+            (transaction_id,)
+        )
+
+    async def payme_perform_transaction(self, transaction_id: str, perform_time: int) -> None:
+        if not self.ready:
+            return
+        await asyncio.to_thread(
+            self._execute,
+            """UPDATE payme_transactions
+               SET state=2, perform_time=%s WHERE transaction_id=%s""",
+            (perform_time, transaction_id)
+        )
+
+    async def payme_cancel_transaction(self, transaction_id: str,
+                                       cancel_time: int, reason: int) -> None:
+        if not self.ready:
+            return
+        await asyncio.to_thread(
+            self._execute,
+            """UPDATE payme_transactions
+               SET state=-1, cancel_time=%s, reason=%s WHERE transaction_id=%s""",
+            (cancel_time, reason, transaction_id)
+        )
+
+    async def payme_get_statement(self, from_time: int, to_time: int) -> list[dict]:
+        if not self.ready:
+            return []
+        return await asyncio.to_thread(
+            self._fetchall,
+            """SELECT * FROM payme_transactions
+               WHERE create_time >= %s AND create_time <= %s
+               ORDER BY create_time""",
+            (from_time, to_time)
+        )
+
+    # ── Obuna ────────────────────────────────────────────────────────────────
+    async def set_subscription(self, user_id: int, tariff: str,
+                                is_vip: bool, expires_at) -> None:
+        """Foydalanuvchiga obuna berish."""
+        if not self.ready:
+            return
+        await asyncio.to_thread(
+            self._execute,
+            """INSERT INTO subscriptions (user_id, tariff, is_vip, expires_at)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (user_id) DO UPDATE SET
+                 tariff=%s, is_vip=%s, expires_at=%s, updated_at=NOW()""",
+            (user_id, tariff, is_vip, expires_at,
+             tariff, is_vip, expires_at)
+        )
+
+    async def get_subscription(self, user_id: int) -> Optional[dict]:
+        """Foydalanuvchi obunasini tekshirish."""
+        if not self.ready:
+            return None
+        return await asyncio.to_thread(
+            self._fetchone,
+            """SELECT * FROM subscriptions
+               WHERE user_id=%s AND (expires_at IS NULL OR expires_at > NOW())""",
+            (user_id,)
+        )
+
+    async def is_subscribed(self, user_id: int) -> bool:
+        """Foydalanuvchi aktiv obunasi bormi."""
+        sub = await self.get_subscription(user_id)
+        return sub is not None
 
 
 db = KinoDB()

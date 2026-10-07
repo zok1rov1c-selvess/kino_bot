@@ -14,6 +14,7 @@ from telegram.ext import (
 
 import config
 from database import db
+from paycom import start_webhook_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,8 +104,17 @@ def _movie_kb(movie_id: int, is_fav: bool = False) -> InlineKeyboardMarkup:
 
 
 async def _check_sub(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Kanal obunasini tekshiradi. Link ko'rsatilmaydi."""
+    """Kanal obunasini tekshiradi. Adminlar va premium foydalanuvchilar o'tkazib yuboriladi."""
     user_id = update.effective_user.id
+
+    # Admin bo'lsa — cheksiz, tekshiruvsiz o'tkazib yuboriladi
+    if is_admin(user_id):
+        return True
+
+    # Premium obuna bor bo'lsa — o'tkazib yuboriladi
+    if await db.is_subscribed(user_id):
+        return True
+
     channels = [ch for ch in config.REQUIRED_CHANNELS if ch]
     if not channels:
         return True
@@ -130,11 +140,14 @@ async def _check_sub(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
         url = f"https://t.me/{ch.lstrip('@')}" if ch.startswith("@") else ch
         buttons.append([InlineKeyboardButton(f"📢 {label}ga obuna bo'lish", url=url)])
     buttons.append([InlineKeyboardButton("✅ Obuna bo'ldim — tekshirish", callback_data="check_sub")])
+    buttons.append([InlineKeyboardButton("💎 Premium obuna olish", callback_data="open_premium")])
 
     msg = update.message or (update.callback_query.message if update.callback_query else None)
     if msg:
         await msg.reply_text(
-            "🔒 <b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>\n\n"
+            "🔒 <b>Botdan foydalanish uchun:</b>\n\n"
+            "1️⃣ Quyidagi kanallarga obuna bo'ling\n"
+            "2️⃣ Yoki 💎 <b>Premium obuna</b> oling\n\n"
             + "\n".join(f"• {n}" for n in names),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -143,11 +156,20 @@ async def _check_sub(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
 
 
 async def _check_edu(update: Update) -> bool:
-    """Edu botga /start bosganmi tekshiradi."""
+    """Edu botga /start bosganmi tekshiradi. Adminlar o'tkazib yuboriladi."""
+    user_id = update.effective_user.id
+
+    # Admin bo'lsa — tekshiruvsiz o'tkazib yuboriladi
+    if is_admin(user_id):
+        return True
+
+    # Premium obuna bor bo'lsa — o'tkazib yuboriladi
+    if await db.is_subscribed(user_id):
+        return True
+
     if not db.edu_ready:
         return True
-    uid = update.effective_user.id
-    result = await db.is_edu_user(uid)
+    result = await db.is_edu_user(user_id)
     if not result:
         msg = update.message or (update.callback_query.message if update.callback_query else None)
         if msg:
@@ -394,6 +416,61 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"👁 Ko'rishlar: {stats.get('total_views', 0) or 0:,}\n"
         f"👥 Foydalanuvchilar: {users:,}",
         parse_mode=ParseMode.HTML,
+    )
+
+
+# ── /subscribe — To'lov ───────────────────────────────────────────────────────
+async def cmd_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Obuna tariflarini ko'rsatadi."""
+    uid, _, _ = _user_info(update)
+
+    # Admin bo'lsa — maxsus xabar
+    if is_admin(uid):
+        await update.message.reply_text(
+            "👑 <b>Siz admin sifatida botdan cheksiz foydalanasiz!</b>\n\n"
+            "Obuna to'lovi talab qilinmaydi.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Hozirgi obunani tekshirish
+    sub = await db.get_subscription(uid)
+    sub_text = ""
+    if sub:
+        if sub.get("is_vip"):
+            sub_text = "\n\n✅ <b>Sizda VIP obuna bor (cheksiz)</b>"
+        elif sub.get("expires_at"):
+            exp = sub["expires_at"]
+            sub_text = f"\n\n✅ <b>Obunangiz: {exp.strftime('%d.%m.%Y %H:%M')} gacha</b>"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            config.PAYME_TARIFFS["vip"]["label"],
+            callback_data="pay_vip"
+        )],
+        [InlineKeyboardButton(
+            config.PAYME_TARIFFS["day30"]["label"],
+            callback_data="pay_day30"
+        )],
+        [InlineKeyboardButton(
+            config.PAYME_TARIFFS["day10"]["label"],
+            callback_data="pay_day10"
+        )],
+        [InlineKeyboardButton(
+            config.PAYME_TARIFFS["day5"]["label"],
+            callback_data="pay_day5"
+        )],
+        [InlineKeyboardButton(
+            config.PAYME_TARIFFS["day3"]["label"],
+            callback_data="pay_day3"
+        )],
+    ])
+
+    await update.message.reply_text(
+        f"💳 <b>Obuna tariflarini tanlang:</b>{sub_text}\n\n"
+        "To'lov Payme orqali amalga oshiriladi.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb,
     )
 
 
@@ -1133,10 +1210,48 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def pay_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """To'lov tugmasi bosilganda Payme linkini yuboradi."""
+    import base64
+    q = update.callback_query
+    await q.answer()
+    data = q.data  # pay_vip, pay_day10, pay_day5, pay_day3
+
+    tariff_key = data[4:]  # "vip", "day10", "day5", "day3"
+    tariff = config.PAYME_TARIFFS.get(tariff_key)
+    if not tariff:
+        await q.message.reply_text("❌ Tarif topilmadi.")
+        return
+
+    uid = q.from_user.id
+
+    # Payme checkout linkini yaratish
+    # account parametrlari: user_id va tariff
+    account_params = f"m={config.PAYME_MERCHANT_ID};ac.user_id={uid};ac.tariff={tariff_key};a={tariff['price']}"
+    encoded = base64.b64encode(account_params.encode()).decode()
+    pay_url = f"{config.PAYME_URL}/{encoded}"
+
+    await q.message.reply_text(
+        f"💳 <b>{tariff['label']}</b>\n\n"
+        f"To'lov uchun quyidagi tugmani bosing:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("💳 Payme orqali to'lash", url=pay_url)
+        ]])
+    )
+
+
 async def post_init(app: Application) -> None:
     await db.connect()
     log.info("KinoDB: %s", "✅" if db.ready else "❌")
     log.info("EduDB: %s", "✅" if db.edu_ready else "yo'q")
+    # Payme webhook serverni ishga tushirish
+    try:
+        import asyncio
+        asyncio.ensure_future(start_webhook_server(port=8080))
+        log.info("Payme webhook server ishga tushdi ✅")
+    except Exception as e:
+        log.warning("Payme webhook server ishga tushmadi: %s", e)
 
 
 def main() -> None:
@@ -1232,17 +1347,19 @@ def main() -> None:
     app.add_handler(settings_conv)
     app.add_handler(add_conv)
     app.add_handler(search_conv)
-    app.add_handler(CommandHandler("start",      cmd_start))
-    app.add_handler(CommandHandler("help",       cmd_help))
-    app.add_handler(CommandHandler("categories", cmd_categories))
-    app.add_handler(CommandHandler("favorites",  cmd_favorites))
-    app.add_handler(CommandHandler("top",        cmd_top))
-    app.add_handler(CommandHandler("stats",      cmd_stats))
+    app.add_handler(CommandHandler("start",          cmd_start))
+    app.add_handler(CommandHandler("help",           cmd_help))
+    app.add_handler(CommandHandler("categories",     cmd_categories))
+    app.add_handler(CommandHandler("favorites",      cmd_favorites))
+    app.add_handler(CommandHandler("top",            cmd_top))
+    app.add_handler(CommandHandler("stats",          cmd_stats))
+    app.add_handler(CommandHandler("subscribe",      cmd_subscribe))
     app.add_handler(CommandHandler("admin",          cmd_admin))
     app.add_handler(CommandHandler("delete",         cmd_delete))
     app.add_handler(CommandHandler("broadcast",      cmd_broadcast))
     app.add_handler(CommandHandler("set_del_admin",  cmd_del_admin))
     app.add_handler(CommandHandler("users",          cmd_users_list))
+    app.add_handler(CallbackQueryHandler(pay_callback,      pattern=r"^pay_"))
     app.add_handler(CallbackQueryHandler(category_callback))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.Regex(r"^\d+$"),
